@@ -63,14 +63,17 @@ def main() -> int:
             cur.executemany(UPSERT_SQL, articles)
             print(f"upserted {len(articles)} articles ({len(articles) - len(existing.keys() & {a['id'] for a in articles})} new)")
 
+            # Bulk: one delete + one COPY for all changed articles (few round trips, fast over the network).
             n_chunks = 0
-            for a in changed:
-                chunks = chunk_article(a["title"], a["content_text"], fallback=a["excerpt"] or "")
-                cur.execute("delete from public.article_chunks where article_id = %s", (a["id"],))
+            if changed:
+                cur.execute("delete from public.article_chunks where article_id = any(%s)",
+                            ([a["id"] for a in changed],))
                 with cur.copy("copy public.article_chunks (article_id, chunk_index, content) from stdin") as cp:
-                    for i, text in enumerate(chunks):
-                        cp.write_row((a["id"], i, text))
-                n_chunks += len(chunks)
+                    for a in changed:
+                        chunks = chunk_article(a["title"], a["content_text"], fallback=a["excerpt"] or "")
+                        for i, text in enumerate(chunks):
+                            cp.write_row((a["id"], i, text))
+                        n_chunks += len(chunks)
             print(f"rebuilt chunks for {len(changed)} articles ({n_chunks} chunks, embeddings pending)")
 
             if args.prune:
