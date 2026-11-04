@@ -68,12 +68,22 @@ RLS is on for all tables with no public policies. Only the Edge Function reads, 
 - Input limits (query length, max `limit`), and errors that don't leak internals.
 - Local testing: `supabase functions serve` + MCP Inspector.
 
+## Milestone A: private use (manual connector)
+Build Phases 1–3, then connect the server to ChatGPT yourself in **Developer Mode**
+(Settings → Apps & Connectors → Advanced → Developer mode → create a connector, then paste the URL).
+The raw `https://<ref>.supabase.co/functions/v1/mcp` URL works here, so there's no custom domain,
+Cloudflare, or Directory paperwork yet. Use this stage to tune search quality with the evaluation set.
+For now, protect it with a secret path segment (`/functions/v1/mcp/<secret>`) so it stays private.
+
+## Milestone B: public launch (Phases 4–6)
+Pick the final domain **before** submitting, because the published server URL reportedly can't change.
+
 ## Phase 4: public edge (Cloudflare)
 - `mcp.<domain>` → Worker or route proxying to `https://<ref>.supabase.co/functions/v1/mcp`.
 - Rate limit per IP (e.g. 60 requests/min), and serve the Directory's domain-verification file from the same domain.
 
 ## Phase 5: ChatGPT app and Directory submission
-1. Test privately in ChatGPT Developer Mode by adding the connector URL and asking real questions.
+1. Repoint the Developer Mode connector at the final domain and test again.
 2. Build an evaluation set of 30–50 questions with known answers, then tune chunk size, `match_count`, and RRF weights.
 3. Submission prerequisites: OpenAI organization verification, a public HTTPS server on a
    verified domain, app name, logo, description, starter prompts, screenshots, privacy policy
