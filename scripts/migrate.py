@@ -2,7 +2,7 @@
 """Copy articles from local SQLite into Supabase Postgres and (re)build their chunks.
 
 Safe to re-run: unchanged articles are only metadata-updated, while new or edited articles
-get fresh chunks (with NULL embeddings, filled afterwards by embed.py).
+get fresh chunks (with NULL embeddings, filled automatically by the embed Edge Function via pg_cron).
 
     python scripts/migrate.py --source data/articles.db
     python scripts/migrate.py --source data/articles.sql --prune
@@ -79,7 +79,7 @@ def main() -> int:
                 print(f"pruned {cur.rowcount} articles no longer in the source")
         conn.commit()
 
-    print(f"done in {time.time() - t0:.1f}s. Next: python scripts/embed.py")
+    print(f"done in {time.time() - t0:.1f}s. Embeddings fill in automatically; check with: select * from embedding_status();")
     return 0
 
 

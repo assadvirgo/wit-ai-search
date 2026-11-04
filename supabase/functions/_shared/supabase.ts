@@ -16,12 +16,17 @@ export async function embed(text: string): Promise<number[]> {
   return Array.from(out as ArrayLike<number>);
 }
 
-export function supabaseBackend(): Backend {
-  const db = createClient(
+/** Service-role client (bypasses RLS). Server-side only. */
+export function adminClient() {
+  return createClient(
     Deno.env.get("SUPABASE_URL")!,
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     { auth: { persistSession: false, autoRefreshToken: false } },
   );
+}
+
+export function supabaseBackend(): Backend {
+  const db = adminClient();
 
   const check = <T>(r: { data: T | null; error: unknown }): T => {
     if (r.error) throw r.error;

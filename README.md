@@ -5,17 +5,16 @@ Semantic search over the WiT article archive, served to ChatGPT as an MCP server
 - **Supabase Postgres + pgvector** stores the articles, plus ~250-word chunks embedded with `gte-small` (384 dims).
 - **`match_chunks()`** runs hybrid search: vector similarity plus full-text, merged with Reciprocal Rank Fusion, best chunk per article.
 - **Edge Function `mcp`** is a stateless MCP server (Streamable HTTP) with the tools `search`, `fetch`, `latest_articles`, `list_categories`.
-- **Edge Function `embed`** embeds text with the same built-in model. The migration uses it, so stored vectors always match query vectors.
+- **Edge Function `embed`** is a background worker: a `pg_cron` job calls it every 5 seconds while chunks are pending. It embeds them with the same built-in model the MCP server uses for queries, so stored vectors always match query vectors.
 
 See [docs/PLAN.md](docs/PLAN.md) for the full plan and roadmap.
 
 ```
 supabase/migrations/…_init.sql      tables, indexes, RLS, match_chunks(), category_counts()
 supabase/functions/mcp/             MCP server entry point
-supabase/functions/embed/           embedding endpoint used by scripts/embed.py
+supabase/functions/embed/           background embedder (called by pg_cron)
 supabase/functions/_shared/         mcp.ts (protocol), tools.ts (tools), supabase.ts (DB + model)
 scripts/migrate.py                  SQLite -> Supabase (articles + chunks)
-scripts/embed.py                    fills chunk embeddings via the embed function
 tests/                              node + python tests (npm test)
 ```
 
@@ -37,61 +36,66 @@ supabase link --project-ref <project-ref>
 supabase db push
 ```
 
-**2. Secrets and functions** (use long random strings for the secrets)
-
-```bash
-supabase secrets set EMBED_SECRET=$(openssl rand -hex 24) MCP_PATH_SECRET=$(openssl rand -hex 24)
-```
+**2. Functions**
 
 ```bash
 supabase functions deploy mcp --no-verify-jwt
 ```
 
 ```bash
-supabase functions deploy embed --no-verify-jwt
+supabase functions deploy embed
 ```
 
-Copy `.env.example` to `.env` and fill in the same two secrets (`supabase secrets list` shows
-only hashes, so save the values when you create them), plus `DATABASE_URL` (Dashboard → Connect →
-Session pooler) and `SUPABASE_URL`.
+Optionally, set `MCP_PATH_SECRET` (Dashboard → Edge Functions → Secrets) to keep the MCP endpoint private.
 
-**3. Load the articles**
+**3. Turn on auto-embedding** (once per project, in the SQL editor)
+
+```sql
+select vault.create_secret('https://<project-ref>.supabase.co', 'project_url');
+select vault.create_secret('<legacy anon key>', 'anon_key');
+```
+
+The second migration created a `pg_cron` job called `embed-pending-chunks`. It reads these two values
+and calls the `embed` function whenever chunks are missing embeddings. Find the anon key under Dashboard →
+Project Settings → API Keys (legacy). It is a public key.
+
+**4. Load the articles**
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate && pip install -r scripts/requirements.txt
 ```
 
 ```bash
-set -a; . ./.env; set +a
+export DATABASE_URL='postgresql://postgres.<project-ref>:<db-password>@aws-0-<region>.pooler.supabase.com:5432/postgres'
 ```
 
 ```bash
 python scripts/migrate.py --source path/to/articles.db
 ```
 
-```bash
-python scripts/embed.py
-```
-
 `--source` takes the SQLite file directly, or a `.sql` dump of the `articles` table. Only
 `status = 'publish'` rows are copied. `content_html`, `content_blocks_json`, `yoast_json` and
-`raw_json` are dropped, and categories and tags become plain-text arrays.
+`raw_json` are dropped, and categories and tags become plain-text arrays. The script can be re-run
+safely: it only rebuilds chunks for new or changed articles, and `--prune` also deletes articles that
+are gone from the source.
 
-Both scripts can be re-run safely. `migrate.py` only rebuilds chunks for new or changed articles
-(`--prune` also deletes articles that are gone from the source), and `embed.py` only embeds chunks
-that have no embedding yet. If the embed function hits CPU or time limits, lower `--batch-size`
-(default 8) or `--workers` (default 4).
+Embeddings then fill in by themselves at roughly 150–180 chunks a minute (about 3 hours for ~30k chunks).
+Check progress in the SQL editor:
 
-**4. Try it**
+```sql
+select * from embedding_status();
+```
+
+**5. Try it**
 
 ```bash
 npx @modelcontextprotocol/inspector
 ```
 
 In the Inspector, choose transport *Streamable HTTP* with the URL
-`https://<project-ref>.supabase.co/functions/v1/mcp/<MCP_PATH_SECRET>`, then run `search`.
+`https://<project-ref>.supabase.co/functions/v1/mcp` (add `/<MCP_PATH_SECRET>` if you set one), then run `search`.
 
-**5. Connect to ChatGPT (private, Developer Mode)**
+**6. Connect to ChatGPT (private, Developer Mode)**
 
 ChatGPT → Settings → Apps & Connectors → Advanced settings → turn on **Developer mode**. Then create a
 connector with the URL above and authentication set to **No authentication**. In a chat, enable the
@@ -124,4 +128,4 @@ supabase functions serve --env-file .env
 - **Site name and tool wording:** edit `SITE_NAME` and the tool descriptions in
   `supabase/functions/_shared/tools.ts`. These descriptions decide when ChatGPT calls the tools.
 - **Search tuning:** `match_chunks()` takes `full_text_weight`, `semantic_weight` and `rrf_k`. Chunk size
-  is set in `scripts/chunking.py`; re-run `migrate.py --rechunk` and then `embed.py` after changing it.
+  is set in `scripts/chunking.py`; re-run `migrate.py --rechunk` after changing it (embeddings refill automatically).

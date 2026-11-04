@@ -37,7 +37,7 @@ create index articles_tags_idx         on public.articles using gin (tags);
 
 -- ---------------------------------------------------------------------------
 -- Chunks: ~250-word passages (title prepended), embedded with gte-small.
--- embedding is NULL until scripts/embed.py fills it.
+-- embedding is NULL until the embed Edge Function fills it (see auto_embed migration).
 -- ---------------------------------------------------------------------------
 create table public.article_chunks (
   id          bigint generated always as identity primary key,

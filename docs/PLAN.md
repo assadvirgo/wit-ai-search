@@ -52,10 +52,11 @@ RLS is on for all tables with no public policies. Only the Edge Function reads, 
 1. `migrate.py`: SQLite (or a `.sql` dump) → Postgres (`psycopg`). It converts types, upserts by `id`,
    drops the four HTML/JSON columns, and chunks new or changed articles (~250 words, 40-word overlap,
    title prepended). The 300-row sample produced 1,364 chunks; the full ~6,500 articles should give about 30k.
-2. `embed.py`: sends pending chunks to the `embed` Edge Function, which runs the same built-in
-   gte-small model the MCP server uses for queries, and writes the vectors back. Because both sides use
-   the same runtime, stored and query vectors always match, and nothing needs installing locally beyond psycopg.
-3. Both scripts can be re-run safely and act as the sync step for new articles.
+2. Auto-embedding: a `pg_cron` job (every 5 seconds, 3 parallel calls of 5 chunks each) calls the `embed`
+   Edge Function while chunks are pending. The function runs the same built-in gte-small model the MCP server
+   uses for queries, so stored and query vectors always match, and nothing needs installing locally beyond
+   psycopg. Measured at ~1.5–2 s per 5 chunks; 10 chunks per call hit `WORKER_RESOURCE_LIMIT`.
+3. `migrate.py` can be re-run safely and acts as the sync step for new articles.
 
 ## Phase 3: MCP server (`supabase/functions/mcp/index.ts`) ✅ built
 - Deno, with a small dependency-free stateless Streamable HTTP implementation (`_shared/mcp.ts`), `--no-verify-jwt`.
@@ -102,7 +103,7 @@ Pick the final domain **before** submitting, because the published server URL re
 supabase/config.toml
 supabase/migrations/20261104000000_init.sql
 supabase/functions/{mcp,embed,_shared}/
-scripts/{migrate,embed,chunking,source}.py, requirements.txt
+scripts/{migrate,chunking,source}.py, requirements.txt
 cloudflare/worker.ts (+ wrangler.toml)
 docs/PLAN.md, docs/privacy.md, docs/terms.md
 .env.example
