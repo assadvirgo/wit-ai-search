@@ -1,0 +1,8 @@
+{
+  "name": "wit-ai-search",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-strip-types --no-warnings --test tests/mcp.test.ts && python3 -m unittest discover -s tests"
+  }
+}

@@ -5,7 +5,7 @@ to ask questions about our ~6,500 published English articles. ChatGPT handles th
 and calls our MCP server. The MCP server runs semantic search over Supabase Postgres with pgvector.
 
 ```
- local SQLite ──(Python: migrate + embed with gte-small)──► Supabase Postgres
+ local SQLite ──(Python migrate; embed via Edge Fn)──► Supabase Postgres
                                                               articles, article_chunks (vector(384))
                                                                    ▲  RPC: match_chunks()
                                                                    │
@@ -30,7 +30,7 @@ With the built-in embedding model there is no per-query AI cost at all.
 | Auth | None (public, read-only data) | Users connect with one click. Abuse is handled by rate limits rather than logins. |
 | Supabase plan | Pro ($25/mo) at launch | Free projects pause when inactive, which would break a public app. |
 
-## Phase 1: Supabase schema (`supabase/migrations/0001_init.sql`)
+## Phase 1: Supabase schema (`supabase/migrations/20261104000000_init.sql`) ✅ built
 
 `articles` (only rows with status `publish`):
 `id bigint pk` (WordPress ID), `title`, `slug unique`, `published_at timestamptz`,
@@ -48,17 +48,18 @@ hybrid RRF search, at most one or two chunks per article, returning article meta
 
 RLS is on for all tables with no public policies. Only the Edge Function reads, using the service role.
 
-## Phase 2: migration and embedding (`scripts/`)
-1. `migrate.py`: SQLite → Postgres (`psycopg`), with type conversion, upsert by `id`, and the four columns dropped.
-2. `embed.py`: chunk each article and embed locally with `Supabase/gte-small` (mean pooling,
-   normalized vectors, the same setup as the Edge Runtime), then write to `article_chunks`.
-   About 6,500 articles produce ~25–30k chunks, which takes minutes on a laptop CPU.
-3. `verify_embeddings.py`: embed the same sentence locally and through the Edge Function, and
-   check the cosine similarity is ≥ 0.99. This guards against mismatched query and stored vectors.
-4. All scripts can be re-run safely and act as the sync step for new articles.
+## Phase 2: migration and embedding (`scripts/`) ✅ built
+1. `migrate.py`: SQLite (or a `.sql` dump) → Postgres (`psycopg`). It converts types, upserts by `id`,
+   drops the four HTML/JSON columns, and chunks new or changed articles (~250 words, 40-word overlap,
+   title prepended). The 300-row sample produced 1,364 chunks; the full ~6,500 articles should give about 30k.
+2. `embed.py`: sends pending chunks to the `embed` Edge Function, which runs the same built-in
+   gte-small model the MCP server uses for queries, and writes the vectors back. Because both sides use
+   the same runtime, stored and query vectors always match, and nothing needs installing locally beyond psycopg.
+3. Both scripts can be re-run safely and act as the sync step for new articles.
 
-## Phase 3: MCP server (`supabase/functions/mcp/index.ts`)
-- Deno, `@modelcontextprotocol/sdk` (or `mcp-lite` + Hono), Streamable HTTP, `--no-verify-jwt`.
+## Phase 3: MCP server (`supabase/functions/mcp/index.ts`) ✅ built
+- Deno, with a small dependency-free stateless Streamable HTTP implementation (`_shared/mcp.ts`), `--no-verify-jwt`.
+- Also `list_categories`, so the model can discover valid category filters.
 - Tools, all annotated `readOnlyHint: true`, `destructiveHint: false`, `openWorldHint: false`:
   - `search(query, limit?, category?, date_from?, date_to?)` → `[{id, title, url, published_at, author, snippet}]`
   - `fetch(id)` → full article text, metadata, and canonical URL (truncated if very long)
@@ -99,18 +100,18 @@ Pick the final domain **before** submitting, because the published server URL re
 ## Repo layout
 ```
 supabase/config.toml
-supabase/migrations/0001_init.sql
-supabase/functions/mcp/index.ts
-scripts/{migrate,embed,verify_embeddings}.py, requirements.txt
+supabase/migrations/20261104000000_init.sql
+supabase/functions/{mcp,embed,_shared}/
+scripts/{migrate,embed,chunking,source}.py, requirements.txt
 cloudflare/worker.ts (+ wrangler.toml)
 docs/PLAN.md, docs/privacy.md, docs/terms.md
 .env.example
 ```
 
-## Open questions
-1. Categories and tags: drop the JSON, but keep the **names** as plain text arrays so users can
-   filter ("articles about X in category Y")? Recommended: yes.
-2. Do you own the articles and the brand, or have permission to publish them? The Directory reviews this.
-3. Which domain should host the MCP endpoint, and is it on Cloudflare?
-4. Is there an OpenAI Platform organization that can complete verification?
-5. Can you add the SQLite file (or a 50-row sample) to the repo so the scripts can be built against real data?
+## Decisions made
+- Categories and tags are stored as plain-text name arrays.
+- Content rights: the owner has permission. Directory review comes at the public-launch stage.
+
+## Open questions (for Milestone B)
+1. Which domain should host the public MCP endpoint, and is it on Cloudflare?
+2. Is there an OpenAI Platform organization that can complete verification?

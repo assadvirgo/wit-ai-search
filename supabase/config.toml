@@ -1,0 +1,10 @@
+# Supabase CLI config. Run `supabase link --project-ref <ref>` to connect to your project.
+project_id = "wit-ai-search"
+
+# Both functions do their own auth (path secret / x-embed-secret), so the gateway's
+# JWT check is off. ChatGPT cannot send a Supabase JWT.
+[functions.mcp]
+verify_jwt = false
+
+[functions.embed]
+verify_jwt = false

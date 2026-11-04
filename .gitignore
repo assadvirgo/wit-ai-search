@@ -1,0 +1,10 @@
+.env
+data/
+*.db
+*.sqlite
+*.sql.gz
+__pycache__/
+.venv/
+node_modules/
+supabase/.branches
+supabase/.temp
