@@ -1,0 +1,507 @@
+<title>WiT Search Pipeline</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: header, scene tabs, then a two-column stage (animated diagram | step list) with a "what is actually sent" panel underneath. */
+:root {
+  --bg: #f2f4f3;
+  --surface: #ffffff;
+  --fg: #17211d;
+  --muted: #5d6a65;
+  --line: #c9d2ce;
+  --c-src: #4457c9;   /* WordPress / your computer */
+  --c-db: #1d8a5b;    /* Postgres in Supabase */
+  --c-fn: #b8611a;    /* Edge Functions + scheduler */
+  --c-ai: #8a3fb0;    /* ChatGPT, people, model */
+  --code-bg: #e8edeb;
+  --font-display: "Bricolage Grotesque", "Avenir Next", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #101614; --surface: #18201d; --fg: #e4ebe8; --muted: #93a39c; --line: #33403b;
+    --c-src: #8b9bff; --c-db: #4cc28e; --c-fn: #f0a057; --c-ai: #cf8cf0; --code-bg: #1f2925;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #101614; --surface: #18201d; --fg: #e4ebe8; --muted: #93a39c; --line: #33403b;
+  --c-src: #8b9bff; --c-db: #4cc28e; --c-fn: #f0a057; --c-ai: #cf8cf0; --code-bg: #1f2925;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--fg);
+  font: 15px/1.55 var(--font-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 28px 48px;
+}
+.wrap { max-width: 1160px; margin: 0 auto; display: grid; gap: 22px; }
+
+header { display: grid; gap: 8px; }
+.eyebrow { font: 500 12px/1 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+h1 { font: 700 clamp(28px, 4.4vw, 44px)/1.05 var(--font-display); margin: 0; text-wrap: balance; letter-spacing: -.01em; }
+.lede { margin: 0; color: var(--muted); max-width: 68ch; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 7px; }
+.sw { width: 12px; height: 12px; border-radius: 3px; border: 2px solid currentColor; }
+.sw.dash { border-style: dashed; color: var(--muted); }
+
+.tabs { display: flex; flex-wrap: wrap; gap: 8px; }
+.tab {
+  font: 600 14px/1 var(--font-body); color: var(--fg);
+  background: transparent; border: 1.5px solid var(--line); border-radius: 999px;
+  padding: 10px 16px; cursor: pointer; display: inline-flex; gap: 9px; align-items: center;
+}
+.tab .n { font: 500 12px/1 var(--font-mono); color: var(--muted); }
+.tab[aria-selected="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.tab[aria-selected="true"] .n { color: var(--bg); opacity: .7; }
+.tab:focus-visible, .ctl:focus-visible, .step:focus-visible { outline: 2.5px solid var(--c-src); outline-offset: 2px; }
+
+.stage {
+  display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 18px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px;
+}
+.scene-head { grid-column: 1 / -1; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; align-items: baseline; }
+.scene-head h2 { margin: 0; font: 700 22px/1.2 var(--font-display); text-wrap: balance; }
+.scene-head p { margin: 4px 0 0; color: var(--muted); font-size: 14px; max-width: 70ch; }
+.controls { display: flex; gap: 6px; align-items: center; }
+.ctl {
+  font: 500 13px/1 var(--font-body); color: var(--fg); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px 11px; cursor: pointer;
+}
+.ctl.primary { background: var(--fg); color: var(--bg); border-color: var(--fg); min-width: 74px; }
+
+.diagram { min-width: 0; overflow-x: auto; }
+.diagram svg { display: block; width: 100%; min-width: 560px; height: auto; }
+
+.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; align-content: start; min-width: 0; }
+.step {
+  display: grid; grid-template-columns: 26px 1fr; gap: 10px; padding: 10px 12px; border-radius: 10px;
+  cursor: pointer; border: 1px solid transparent; color: var(--muted);
+}
+.step .k { font: 500 12px/26px var(--font-mono); text-align: center; border-radius: 50%; background: var(--code-bg); height: 26px; color: var(--muted); }
+.step b { display: block; font-weight: 600; color: var(--fg); font-size: 14.5px; line-height: 1.35; }
+.step span.t { display: block; font-size: 13.5px; margin-top: 3px; }
+.step[aria-current="step"] { background: var(--bg); border-color: var(--line); color: var(--fg); }
+.step[aria-current="step"] .k { background: var(--fg); color: var(--bg); }
+.step .tag { display: inline-block; font: 500 10.5px/1 var(--font-mono); letter-spacing: .06em; text-transform: uppercase; padding: 3px 6px; border-radius: 4px; border: 1px dashed var(--muted); color: var(--muted); margin-left: 6px; vertical-align: 2px; }
+
+.left { display: grid; gap: 14px; align-content: start; min-width: 0; }
+.sent { display: grid; gap: 6px; min-width: 0; }
+.sent .label { font: 500 11.5px/1 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+pre {
+  margin: 0; background: var(--code-bg); border-radius: 10px; padding: 14px 16px; overflow-x: auto;
+  font: 12.5px/1.6 var(--font-mono); color: var(--fg); min-height: 9.6em; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.progress { height: 3px; background: var(--line); border-radius: 2px; overflow: hidden; grid-column: 1 / -1; }
+.progress i { display: block; height: 100%; width: 0; background: var(--fg); }
+
+/* SVG */
+.edge { stroke: var(--line); stroke-width: 2; fill: none; }
+.edge.dashed { stroke-dasharray: 6 5; }
+.edge.on { stroke: var(--fg); stroke-width: 2.6; }
+.elabel { font: 500 11px var(--font-mono); fill: var(--muted); }
+.elabel.on { fill: var(--fg); }
+.node rect.box { fill: var(--surface); stroke-width: 2; }
+.node.planned rect.box { stroke-dasharray: 7 5; }
+.node text.l { font: 600 15px var(--font-body); fill: var(--fg); }
+.node text.s { font: 400 11.5px var(--font-body); fill: var(--muted); }
+.node .halo { fill: none; stroke-width: 7; opacity: 0; }
+.node.on .halo { opacity: .22; }
+.packet { stroke: var(--surface); stroke-width: 2; }
+.vbar { fill: var(--c-db); }
+
+.notes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.note { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; min-width: 0; }
+.note h3 { margin: 0 0 6px; font: 700 15.5px/1.3 var(--font-display); }
+.note p { margin: 0; font-size: 13.5px; color: var(--muted); }
+.note code, .step code { font: 12.5px var(--font-mono); background: var(--code-bg); padding: 1px 5px; border-radius: 4px; color: var(--fg); }
+
+@media (max-width: 860px) {
+  .stage { grid-template-columns: minmax(0, 1fr); }
+  .notes { grid-template-columns: minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .progress { display: none; }
+}
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">wit-ai-search · how it works</div>
+    <h1>From a WordPress post to a cited answer in ChatGPT</h1>
+    <p class="lede">Three stages: articles are synced into Postgres, split into passages and turned into vectors in the background, then searched live when someone asks ChatGPT a question. Pick a stage, then play it or step through it.</p>
+    <div class="legend" aria-label="Legend">
+      <span style="color:var(--c-src)"><i class="sw"></i><span style="color:var(--muted)">WordPress / your computer</span></span>
+      <span style="color:var(--c-db)"><i class="sw"></i><span style="color:var(--muted)">Postgres (Supabase)</span></span>
+      <span style="color:var(--c-fn)"><i class="sw"></i><span style="color:var(--muted)">Edge Functions &amp; scheduler</span></span>
+      <span style="color:var(--c-ai)"><i class="sw"></i><span style="color:var(--muted)">ChatGPT &amp; the AI model</span></span>
+      <span><i class="sw dash"></i>dashed = planned, not built yet</span>
+    </div>
+  </header>
+
+  <div class="tabs" role="tablist" aria-label="Stages" id="tabs"></div>
+
+  <section class="stage" aria-live="polite">
+    <div class="scene-head">
+      <div>
+        <h2 id="sceneTitle"></h2>
+        <p id="sceneSub"></p>
+      </div>
+      <div class="controls">
+        <button class="ctl" id="prev" type="button" aria-label="Previous step">◀</button>
+        <button class="ctl primary" id="play" type="button">Pause</button>
+        <button class="ctl" id="next" type="button" aria-label="Next step">▶</button>
+      </div>
+    </div>
+    <div class="progress" aria-hidden="true"><i id="bar"></i></div>
+    <div class="left">
+      <div class="diagram"><svg id="svg" viewBox="0 0 800 430" role="img" aria-label="Animated diagram of the current stage"></svg></div>
+      <div class="sent">
+        <div class="label" id="sentLabel">What is actually sent at this step</div>
+        <pre id="code"></pre>
+      </div>
+    </div>
+    <ol class="steps" id="steps"></ol>
+  </section>
+
+  <div class="notes">
+    <div class="note">
+      <h3>Why chunks, not whole articles</h3>
+      <p>One vector for a 3,000-word article blurs every topic in it together. Passages of about 250 words, each starting with the article title, keep each vector about one thing. Search returns the best passage per article.</p>
+    </div>
+    <div class="note">
+      <h3>Why the same model twice</h3>
+      <p>Stored passages and your question are both embedded with <code>gte-small</code> inside Supabase. Vectors from different models can't be compared, so both sides use the same model by design.</p>
+    </div>
+    <div class="note">
+      <h3>Why keyword search too</h3>
+      <p>Small embedding models can miss exact names like “HotelQuickly” or “CAAC”. Postgres full-text search catches those, and Reciprocal Rank Fusion merges the two ranked lists into one.</p>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const C = { src: "var(--c-src)", db: "var(--c-db)", fn: "var(--c-fn)", ai: "var(--c-ai)" };
+  const W = 168, H = 62;
+
+  const SCENES = [
+    {
+      tab: "Sync articles",
+      title: "Stage 1 · Getting articles into Postgres",
+      sub: "Today you run migrate.py on your Mac against an export. A scheduled WordPress sync is the planned next step and would feed into the same tables the same way.",
+      nodes: [
+        { id: "wp", x: 24, y: 40, k: "src", l: "WordPress", s: "webintravel.com posts" },
+        { id: "exp", x: 24, y: 300, k: "src", l: "SQLite / .sql export", s: "today: your articles file" },
+        { id: "mig", x: 290, y: 300, k: "src", l: "migrate.py", s: "runs on your Mac" },
+        { id: "sync", x: 290, y: 40, k: "fn", l: "sync-wordpress", s: "planned · every 15 min", planned: true },
+        { id: "hash", x: 450, y: 170, k: "db", l: "content_hash check", s: "unchanged → skipped" },
+        { id: "art", x: 615, y: 40, k: "db", l: "articles", s: "1 row per post" },
+        { id: "chk", x: 615, y: 300, k: "db", l: "article_chunks", s: "embedding = NULL" },
+      ],
+      edges: [
+        { id: "wp-sync", a: "wp", b: "sync", lab: "REST API", dashed: true },
+        { id: "wp-exp", a: "wp", b: "exp", lab: "export" },
+        { id: "exp-mig", a: "exp", b: "mig" },
+        { id: "mig-hash", a: "mig", b: "hash" },
+        { id: "sync-hash", a: "sync", b: "hash", dashed: true },
+        { id: "hash-art", a: "hash", b: "art", lab: "upsert" },
+        { id: "art-chk", a: "art", b: "chk", lab: "split ~250 words" },
+      ],
+      steps: [
+        { b: "A post is published or edited", t: "WordPress is the source of truth. Every post has an ID, a modified date, its text, categories and tags.",
+          nodes: ["wp"], flow: [],
+          code: `post 375  "Adapt to Google's semantic search…"\nmodified_gmt  2014-03-06T19:22:44\ncategories    Marketing\ntags          Google, Bing, Hummingbird` },
+        { b: "Today: export and run migrate.py", t: "You export the articles table, then run the script. It reads published posts only and drops HTML and JSON columns.",
+          nodes: ["exp", "mig"], flow: ["wp-exp", "exp-mig"],
+          code: `export DATABASE_URL='postgresql://postgres.<ref>:<password>@…pooler.supabase.com:5432/postgres'\npython scripts/migrate.py --source data/articles.sql\n\nread 6500 published articles from data/articles.sql` },
+        { b: "Planned: a scheduled sync", planned: true, t: "A sync-wordpress Edge Function, triggered by pg_cron, asks WordPress only for posts changed since the last run. Nothing to run by hand.",
+          nodes: ["sync"], flow: ["wp-sync"],
+          code: `GET https://www.webintravel.com/wp-json/wp/v2/posts\n    ?modified_after=2026-11-04T08:00:00\n    &per_page=100&_embed=wp:term\n\n→ [{ id: 9812, modified_gmt: "2026-11-04T08:41:02", title: {…}, content: {…} }, …]` },
+        { b: "Skip anything unchanged", t: "Each article gets a fingerprint of its title, text and excerpt. If it matches what's already stored, nothing is re-chunked or re-embedded.",
+          nodes: ["hash"], flow: ["mig-hash", "sync-hash"],
+          code: `content_hash = sha256(title ␀ content_text ␀ excerpt)\n\nstored  c64f43…5ed091   new  c64f43…5ed091   → same, skip chunks\nstored  (none)          new  4bda60…4527     → new article` },
+        { b: "Upsert the article row", t: "New posts are inserted and existing ones updated by WordPress ID. Categories and tags are stored as plain-text name lists.",
+          nodes: ["art"], flow: ["hash-art"],
+          code: `insert into articles (id, title, slug, published_at_gmt, …, categories, tags, content_hash)\nvalues (569, 'Year of the Chat', …, '{Mobile,Social}', '{instant chats,…}', '4bda60…')\non conflict (id) do update set …` },
+        { b: "Rebuild its chunks", t: "Old passages for that article are deleted. The text is split into ~250-word passages with a 40-word overlap, each prefixed with the title, and saved without a vector yet.",
+          nodes: ["chk"], flow: ["art-chk"],
+          code: `chunk 0  "Year of the Chat\\n\\n“What are you doing?” I asked my 19-year-old god-daughter…"\nchunk 1  "Year of the Chat\\n\\n…the fate of her fingers. “Why don't you just be the one…"\nchunk 2  "Year of the Chat\\n\\n…registered on Singapore's DNC list. Other than being a threat…"\n\nembedding = NULL   → picked up by stage 2 automatically` },
+      ],
+    },
+    {
+      tab: "Embed in the background",
+      title: "Stage 2 · Turning passages into vectors",
+      sub: "Nobody triggers this by hand. A scheduler inside Postgres notices passages without vectors and keeps calling the embed function until there are none left.",
+      nodes: [
+        { id: "chk", x: 24, y: 184, k: "db", l: "article_chunks", s: "rows with embedding NULL" },
+        { id: "cron", x: 250, y: 30, k: "fn", l: "pg_cron", s: "checks every 5 seconds" },
+        { id: "net", x: 190, y: 338, k: "fn", l: "pg_net", s: "3 HTTP calls at once" },
+        { id: "emb", x: 470, y: 184, k: "fn", l: "embed function", s: "claims 5 passages" },
+        { id: "mdl", x: 400, y: 338, k: "ai", l: "gte-small model", s: "built into Supabase" },
+        { id: "vec", x: 615, y: 338, k: "db", l: "vector(384)", s: "saved + HNSW index", vec: true },
+      ],
+      edges: [
+        { id: "cron-chk", a: "cron", b: "chk", lab: "any pending?" },
+        { id: "cron-net", a: "cron", b: "net" },
+        { id: "net-emb", a: "net", b: "emb", lab: "POST ×3" },
+        { id: "emb-chk", a: "emb", b: "chk", lab: "claim + lock" },
+        { id: "emb-mdl", a: "emb", b: "mdl", lab: "text" },
+        { id: "mdl-vec", a: "mdl", b: "vec" },
+      ],
+      steps: [
+        { b: "The scheduler ticks", t: "Every 5 seconds pg_cron runs one tiny query: is there any passage without a vector? If not, it does nothing and costs nothing.",
+          nodes: ["cron", "chk"], flow: ["cron-chk"],
+          code: `select 1 from article_chunks where embedding is null limit 1;\n\n→ yes: 30,214 passages pending` },
+        { b: "It calls the embed function", t: "pg_net sends three HTTP requests in parallel to the embed Edge Function, using the project's public anon key stored in Vault.",
+          nodes: ["net", "emb"], flow: ["cron-net", "net-emb"],
+          code: `select net.http_post(\n  url     := <project_url> || '/functions/v1/embed',\n  headers := {"Authorization": "Bearer <anon_key>"},\n  body    := {"limit": 5}\n) from generate_series(1, 3);` },
+        { b: "Each worker claims 5 passages", t: "Claiming locks rows so the three workers never grab the same passages. More than 5 per call ran out of compute in testing.",
+          nodes: ["emb", "chk"], flow: ["emb-chk"],
+          code: `select * from claim_pending_chunks(5);\n\n-- inside: … where embedding is null\n--          and (embed_claimed_at is null or older than 3 minutes)\n--          for update skip locked\n→ ids 1201, 1202, 1203, 1204, 1205` },
+        { b: "The model reads each passage", t: "gte-small turns each passage into 384 numbers that describe its meaning. Passages about similar things get similar numbers.",
+          nodes: ["mdl", "vec"], flow: ["emb-mdl", "mdl-vec"], bars: true,
+          code: `session.run("Year of the Chat\\n\\n“What are you doing?” I asked…",\n            { mean_pool: true, normalize: true })\n\n→ [0.0213, -0.0441, 0.0187, 0.0602, -0.0129, …]   384 values` },
+        { b: "Vectors are saved and indexed", t: "The vectors are written back to the passages and added to the HNSW index. From this moment those passages are searchable.",
+          nodes: ["vec", "chk"], flow: ["mdl-vec"], bars: true,
+          code: `select store_chunk_embeddings('[{"id":1201,"embedding":"[0.0213,-0.0441,…]"}, …]');\n→ 5\n\nselect * from embedding_status();\n→ total 30214 | embedded 1205 | pending 29009` },
+        { b: "Failures retry themselves", t: "If a worker crashes mid-batch, its claim expires after 3 minutes and another worker picks those passages up. About 150–180 passages are embedded per minute.",
+          nodes: ["chk", "cron"], flow: ["cron-chk"],
+          code: `-- a claim older than 3 minutes counts as free again\nembed_claimed_at < now() - interval '3 minutes'\n\n~30,000 passages ÷ ~170 per minute ≈ 3 hours for the full archive` },
+      ],
+    },
+    {
+      tab: "Ask ChatGPT",
+      title: "Stage 3 · A question, a search, a cited answer",
+      sub: "ChatGPT does the talking. The MCP server only searches and returns articles; it never writes the answer itself.",
+      nodes: [
+        { id: "you", x: 20, y: 184, k: "ai", l: "You", s: "asking in ChatGPT", w: 124 },
+        { id: "gpt", x: 180, y: 184, k: "ai", l: "ChatGPT", s: "picks a tool to call" },
+        { id: "mcp", x: 410, y: 184, k: "fn", l: "mcp function", s: "Supabase Edge Function" },
+        { id: "mdl", x: 410, y: 30, k: "ai", l: "gte-small model", s: "question → 384 numbers" },
+        { id: "match", x: 410, y: 338, k: "db", l: "match_chunks()", s: "vector + keyword search" },
+        { id: "db", x: 630, y: 338, k: "db", l: "articles + chunks", s: "Postgres + pgvector", w: 156 },
+      ],
+      edges: [
+        { id: "you-gpt", a: "you", b: "gpt" },
+        { id: "gpt-mcp", a: "gpt", b: "mcp", lab: "MCP · HTTPS" },
+        { id: "mcp-mdl", a: "mcp", b: "mdl" },
+        { id: "mcp-match", a: "mcp", b: "match" },
+        { id: "match-db", a: "match", b: "db" },
+        { id: "mcp-db", a: "mcp", b: "db" },
+      ],
+      steps: [
+        { b: "Once: ChatGPT connects", t: "When you add the server, ChatGPT asks what it can do. The server replies with its four tools and their descriptions, which ChatGPT uses to decide when to call them.",
+          nodes: ["gpt", "mcp"], flow: ["gpt-mcp", "-gpt-mcp"],
+          code: `→ {"method": "initialize", "params": {"protocolVersion": "2025-06-18"}}\n→ {"method": "tools/list"}\n← {"tools": [ "search", "fetch", "latest_articles", "list_categories" ]}` },
+        { b: "You ask a question", t: "ChatGPT reads it and the tool descriptions, and decides the archive can help.",
+          nodes: ["you", "gpt"], flow: ["you-gpt"],
+          code: `“Which hotel booking apps raised funding, and how much?”` },
+        { b: "ChatGPT calls search", t: "It rewrites your question into a search query and sends a JSON-RPC request to the mcp function's URL.",
+          nodes: ["gpt", "mcp"], flow: ["gpt-mcp"],
+          code: `POST https://bdmkdczpotsfnjfhrvwn.supabase.co/functions/v1/mcp\n{"jsonrpc":"2.0","id":7,"method":"tools/call",\n "params":{"name":"search","arguments":{"query":"hotel booking app funding round","limit":8}}}` },
+        { b: "The question becomes a vector", t: "The mcp function embeds the query with the same gte-small model used in stage 2, so the numbers are comparable.",
+          nodes: ["mcp", "mdl"], flow: ["mcp-mdl", "-mcp-mdl"],
+          code: `embed("hotel booking app funding round")\n→ [0.0177, -0.0392, 0.0544, …]   384 values` },
+        { b: "Hybrid search in Postgres", t: "Two ranked lists are built: nearest vectors by meaning, and full-text keyword matches. They're merged with RRF, and only the best passage per article is kept.",
+          nodes: ["match", "db"], flow: ["mcp-match", "match-db", "-match-db", "-mcp-match"],
+          code: `meaning  1 HotelQuickly…   2 HotelTonight…   3 Rocketrip…\nkeywords 1 Rocketrip…      2 HotelQuickly…   3 Flocations…\n\nscore = 1/(50 + meaning rank) + 1/(50 + keyword rank)\nHotelQuickly = 1/51 + 1/52 = 0.0388   → ranked first` },
+        { b: "Results go back to ChatGPT", t: "Each result carries the article id, title, URL, date, categories and the matching passage.",
+          nodes: ["mcp", "gpt"], flow: ["-gpt-mcp"],
+          code: `{"results":[\n  {"id":"776","title":"HotelQuickly gets HK$9mil in fresh funding",\n   "url":"https://www.webintravel.com/hotelquickly-gets-hk9mil-fresh-funding/",\n   "published_at":"2013-09-25","snippet":"Same-day hotel booking mobile app, HotelQuickly…"},\n  … ]}` },
+        { b: "Optional: fetch the full article", t: "If a passage isn't enough, ChatGPT calls fetch with the id and gets the whole article text.",
+          nodes: ["mcp", "db"], flow: ["gpt-mcp", "mcp-db", "-mcp-db", "-gpt-mcp"],
+          code: `→ {"method":"tools/call","params":{"name":"fetch","arguments":{"id":"776"}}}\n← {"id":"776","title":"HotelQuickly gets…","text":"## Same-day hotel booking mobile app…",\n   "url":"https://www.webintravel.com/…","metadata":{"published_at":"2013-09-25", …}}` },
+        { b: "ChatGPT writes the answer", t: "It answers from the returned articles only and links each claim to its source URL.",
+          nodes: ["gpt", "you"], flow: ["-you-gpt"],
+          code: `“HotelQuickly closed a HK$9 million (US$1.15M) Series A in September 2013 [webintravel.com/hotelquickly-…].\n Corporate-travel startup Rocketrip raised US$2.6M led by Canaan Partners [webintravel.com/rocketrip-…].”` },
+      ],
+    },
+  ];
+
+  const NS = "http://www.w3.org/2000/svg";
+  const $ = (id) => document.getElementById(id);
+  const svg = $("svg"), stepsEl = $("steps"), codeEl = $("code"), bar = $("bar"), playBtn = $("play");
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const STEP_MS = 6500, HOP_MS = 950;
+
+  let sceneIx = 0, stepIx = 0, playing = !reduce, stepStart = performance.now();
+  let edgeEls = {}, nodeEls = {}, packet = null, bars = [];
+
+  function el(tag, attrs, parent) {
+    const e = document.createElementNS(NS, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    if (parent) parent.appendChild(e);
+    return e;
+  }
+
+  function box(n) { const w = n.w || W; return { x: n.x, y: n.y, w, h: H, cx: n.x + w / 2, cy: n.y + H / 2 }; }
+  function clip(b, dx, dy) {
+    const tx = dx ? (b.w / 2 + 6) / Math.abs(dx) : Infinity;
+    const ty = dy ? (b.h / 2 + 6) / Math.abs(dy) : Infinity;
+    const t = Math.min(tx, ty);
+    return [b.cx + dx * t, b.cy + dy * t];
+  }
+
+  function buildScene() {
+    const sc = SCENES[sceneIx];
+    svg.textContent = "";
+    edgeEls = {}; nodeEls = {}; bars = [];
+    const defs = el("defs", {}, svg);
+    for (const [name, color] of [["arr", "var(--line)"], ["arrOn", "var(--fg)"]]) {
+      const m = el("marker", { id: name, viewBox: "0 0 10 10", refX: 8, refY: 5, markerWidth: 7, markerHeight: 7, orient: "auto-start-reverse" }, defs);
+      el("path", { d: "M0,0 L10,5 L0,10 z", fill: color }, m);
+    }
+    const byId = Object.fromEntries(sc.nodes.map((n) => [n.id, n]));
+    const gE = el("g", {}, svg), gN = el("g", {}, svg);
+
+    for (const e of sc.edges) {
+      const A = box(byId[e.a]), B = box(byId[e.b]);
+      const dx = B.cx - A.cx, dy = B.cy - A.cy, len = Math.hypot(dx, dy);
+      const [x1, y1] = clip(A, dx / len, dy / len), [x2, y2] = clip(B, -dx / len, -dy / len);
+      const path = el("path", { d: `M${x1},${y1} L${x2},${y2}`, class: "edge" + (e.dashed ? " dashed" : ""), "marker-end": "url(#arr)" }, gE);
+      let lab = null;
+      if (e.lab) {
+        const mx = (x1 + x2) / 2, my = (y1 + y2) / 2, horiz = Math.abs(dx) > Math.abs(dy);
+        lab = el("text", { x: mx + (horiz ? 0 : -8), y: my + (horiz ? -9 : 4), class: "elabel", "text-anchor": horiz ? "middle" : "end" }, gE);
+        lab.textContent = e.lab;
+      }
+      edgeEls[e.id] = { path, lab, len: Math.hypot(x2 - x1, y2 - y1) };
+    }
+
+    for (const n of sc.nodes) {
+      const b = box(n), color = C[n.k];
+      const g = el("g", { class: "node" + (n.planned ? " planned" : "") }, gN);
+      el("rect", { class: "halo", x: b.x - 4, y: b.y - 4, width: b.w + 8, height: b.h + 8, rx: 13, stroke: color }, g);
+      el("rect", { class: "box", x: b.x, y: b.y, width: b.w, height: b.h, rx: 10, stroke: color }, g);
+      el("circle", { cx: b.x + 15, cy: b.y + 21, r: 4.5, fill: color }, g);
+      const l = el("text", { class: "l", x: b.x + 27, y: b.y + 26 }, g); l.textContent = n.l;
+      const s = el("text", { class: "s", x: b.x + 15, y: b.y + 46 }, g); s.textContent = n.s;
+      if (n.vec) {
+        for (let i = 0; i < 24; i++) {
+          const r = el("rect", { class: "vbar", x: b.x + 6 + i * 6.5, y: b.y - 12, width: 4.5, height: 2, rx: 1 }, gN);
+          bars.push({ r, base: b.y - 10, seed: Math.sin(i * 12.9898) * 43758.5453 % 1 });
+        }
+      }
+      nodeEls[n.id] = g;
+    }
+    packet = el("circle", { r: 7, class: "packet", fill: "var(--fg)", opacity: 0 }, svg);
+
+    const tabs = document.querySelectorAll(".tab");
+    tabs.forEach((t, i) => { t.setAttribute("aria-selected", i === sceneIx ? "true" : "false"); t.tabIndex = i === sceneIx ? 0 : -1; });
+    $("sceneTitle").textContent = sc.title;
+    $("sceneSub").textContent = sc.sub;
+    stepsEl.textContent = "";
+    sc.steps.forEach((st, i) => {
+      const li = document.createElement("li");
+      li.className = "step"; li.tabIndex = 0;
+      li.innerHTML = `<span class="k">${i + 1}</span><span><b></b><span class="t"></span></span>`;
+      li.querySelector("b").textContent = st.b;
+      if (st.planned) { const tg = document.createElement("span"); tg.className = "tag"; tg.textContent = "planned"; li.querySelector("b").appendChild(tg); }
+      li.querySelector(".t").textContent = st.t;
+      li.addEventListener("click", () => goStep(i, true));
+      li.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); goStep(i, true); } });
+      stepsEl.appendChild(li);
+    });
+    applyStep();
+  }
+
+  function applyStep() {
+    const sc = SCENES[sceneIx], st = sc.steps[stepIx];
+    const active = new Set(st.flow.map((f) => f.replace(/^-/, "")));
+    for (const id in edgeEls) {
+      const on = active.has(id);
+      edgeEls[id].path.classList.toggle("on", on);
+      edgeEls[id].path.setAttribute("marker-end", on ? "url(#arrOn)" : "url(#arr)");
+      if (edgeEls[id].lab) edgeEls[id].lab.classList.toggle("on", on);
+    }
+    for (const id in nodeEls) nodeEls[id].classList.toggle("on", st.nodes.includes(id));
+    [...stepsEl.children].forEach((li, i) => { if (i === stepIx) li.setAttribute("aria-current", "step"); else li.removeAttribute("aria-current"); });
+    codeEl.textContent = st.code;
+    stepStart = performance.now();
+    if (!st.bars) bars.forEach((b) => { b.r.setAttribute("height", 2); b.r.setAttribute("y", b.base - 2); });
+    if (reduce) drawStatic(st);
+  }
+
+  function drawStatic(st) {
+    const f = st.flow[0];
+    if (!f) { packet.setAttribute("opacity", 0); return; }
+    const e = edgeEls[f.replace(/^-/, "")], p = e.path.getPointAtLength(e.len / 2);
+    packet.setAttribute("cx", p.x); packet.setAttribute("cy", p.y); packet.setAttribute("opacity", 1);
+    if (st.bars) bars.forEach((b) => { const h = 6 + Math.abs(b.seed) * 26; b.r.setAttribute("height", h); b.r.setAttribute("y", b.base - h); });
+  }
+
+  function goStep(i, user) {
+    const n = SCENES[sceneIx].steps.length;
+    stepIx = (i + n) % n;
+    if (user && playing) stepStart = performance.now();
+    applyStep();
+  }
+
+  function goScene(i) { sceneIx = i; stepIx = 0; buildScene(); }
+
+  function frame(now) {
+    const sc = SCENES[sceneIx], st = sc.steps[stepIx];
+    const el2 = Math.max(0, now - stepStart);
+    if (!reduce) {
+      if (st.flow.length) {
+        const cycle = st.flow.length * HOP_MS + 500;
+        const t = el2 % cycle, hop = Math.floor(t / HOP_MS);
+        if (hop < st.flow.length) {
+          const f = st.flow[hop], rev = f.startsWith("-"), e = edgeEls[f.replace(/^-/, "")];
+          let u = (t - hop * HOP_MS) / HOP_MS; u = u < .5 ? 2 * u * u : 1 - Math.pow(-2 * u + 2, 2) / 2;
+          const p = e.path.getPointAtLength((rev ? 1 - u : u) * e.len);
+          packet.setAttribute("cx", p.x); packet.setAttribute("cy", p.y); packet.setAttribute("opacity", 1);
+        } else packet.setAttribute("opacity", 0);
+      } else packet.setAttribute("opacity", 0);
+      if (st.bars) {
+        bars.forEach((b, i) => {
+          const h = 4 + (0.5 + 0.5 * Math.sin(now / 260 + i * 0.9 + b.seed * 6)) * 28;
+          b.r.setAttribute("height", h.toFixed(1)); b.r.setAttribute("y", (b.base - h).toFixed(1));
+        });
+      }
+    }
+    if (playing) {
+      bar.style.width = Math.min(100, (el2 / STEP_MS) * 100) + "%";
+      if (el2 >= STEP_MS) {
+        if (stepIx === sc.steps.length - 1) goScene((sceneIx + 1) % SCENES.length);
+        else goStep(stepIx + 1);
+      }
+    }
+    requestAnimationFrame(frame);
+  }
+
+  function setPlaying(p) { playing = p; playBtn.textContent = p ? "Pause" : "Play"; stepStart = performance.now(); if (!p) bar.style.width = "0%"; }
+
+  const tabsEl = $("tabs");
+  SCENES.forEach((sc, i) => {
+    const b = document.createElement("button");
+    b.className = "tab"; b.type = "button"; b.setAttribute("role", "tab");
+    b.innerHTML = `<span class="n">${i + 1}</span><span></span>`;
+    b.lastChild.textContent = sc.tab;
+    b.addEventListener("click", () => goScene(i));
+    b.addEventListener("keydown", (ev) => {
+      if (ev.key === "ArrowRight" || ev.key === "ArrowLeft") {
+        const j = (i + (ev.key === "ArrowRight" ? 1 : -1) + SCENES.length) % SCENES.length;
+        goScene(j); tabsEl.children[j].focus();
+      }
+    });
+    tabsEl.appendChild(b);
+  });
+  playBtn.addEventListener("click", () => setPlaying(!playing));
+  $("prev").addEventListener("click", () => goStep(stepIx - 1, true));
+  $("next").addEventListener("click", () => goStep(stepIx + 1, true));
+
+  setPlaying(playing);
+  buildScene();
+  requestAnimationFrame(frame);
+})();
+</script>
